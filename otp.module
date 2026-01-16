@@ -1,0 +1,436 @@
+<?php
+
+/**
+ * Implements hook_permission().
+ */
+function otp_permission() {
+  return array(
+    'configure otp settings' => array(
+      'title' => t('Configure OTP settings'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_init().
+ */
+function otp_init() {
+  if (user_is_anonymous() && !empty($_GET['destination']) && !url_is_external($_GET['destination'])) {
+    // Persist destination early in the request lifecycle to survive form
+    // rebuilds and redirects during the OTP flow.
+    $_SESSION['otp_destination'] = $_GET['destination'];
+  }
+}
+
+/**
+ * Implements hook_config_info().
+ */
+function otp_config_info() {
+  $prefixes['otp.settings'] = array(
+    'label' => t('OTP settings'),
+    'group' => t('Configuration'),
+  );
+  return $prefixes;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function otp_menu() {
+  $items['user/login/verify'] = array(
+    'title' => t('Enter your passcode'),
+    'page callback' => 'otp_verify_page',
+    'access callback' => 'otp_login_access',
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['admin/config/people/otp'] = array(
+    'title' => t('OTP login'),
+    'description' => t('Configure the one-time passcode login flow.'),
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('otp_settings'),
+    'access callback' => 'user_access',
+    'access arguments' => array('configure otp settings'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function otp_menu_alter(&$items) {
+  if (isset($items['user/password'])) {
+    $items['user/password']['page callback'] = 'backdrop_goto';
+    $items['user/password']['page arguments'] = array('user/login');
+    unset($items['user/password']['file'], $items['user/password']['type']);
+  }
+
+  if (isset($items['admin/config/people/login'])) {
+    $items['admin/config/people/login']['page callback'] = 'backdrop_goto';
+    $items['admin/config/people/login']['page arguments'] = array('admin/config/people/otp');
+    unset($items['admin/config/people/login']['file'], $items['admin/config/people/login']['type']);
+  }
+}
+
+/**
+ * Implements hook_menu_link_alter().
+ */
+function otp_menu_link_alter(&$link) {
+  if (!empty($link['link_path']) && $link['link_path'] === 'admin/config/people/otp') {
+    $link['hidden'] = 1;
+  }
+}
+
+/**
+ * Implements hook_user_login_paths_alter().
+ *
+ * Ensure OTP routes participate in the simplified login experience when
+ * enabled via admin/config/people/login.
+ */
+function otp_user_login_paths_alter(array &$paths) {
+  $paths['user/login/verify'] = TRUE;
+}
+
+/**
+ * Page callback for OTP verification using the login page wrapper.
+ */
+function otp_verify_page() {
+  $verify_form = backdrop_get_form('otp_verify_form');
+  return user_login_page_wrapper($verify_form);
+}
+
+/**
+ * Access callback for OTP routes.
+ */
+function otp_login_access() {
+  return user_is_anonymous();
+}
+
+/**
+ * Settings form.
+ */
+function otp_settings() {
+  $config = config('otp.settings');
+
+  $code_length = $config->get('otp_code_length');
+  $code_length = $code_length !== NULL ? (int) $code_length : 6;
+
+  $expiration = $config->get('otp_expiration');
+  $expiration = $expiration !== NULL ? (int) $expiration : 600;
+
+  $sent_page_text = $config->get('otp_sent_page_text');
+  if (empty($sent_page_text)) {
+    $sent_page_text = "We’ve just sent a login link to your email address. You should see it in your inbox shortly 😊";
+  }
+
+  $welcome_text = $config->get('otp_welcome_text');
+  if (empty($welcome_text)) {
+    $welcome_text = "Welcome back! 🎉 You’re now signed in using your one-time login link.";
+  }
+
+  $form['otp_code_length'] = array(
+    '#type' => 'number',
+    '#title' => t('Passcode length'),
+    '#description' => t('Number of digits generated for each login code. Minimum 4, maximum 10.'),
+    '#default_value' => $code_length,
+    '#min' => 4,
+    '#max' => 10,
+    '#required' => TRUE,
+  );
+
+  $form['otp_expiration'] = array(
+    '#type' => 'number',
+    '#title' => t('Passcode expiration (seconds)'),
+    '#description' => t('How long a generated code remains valid. Defaults to 10 minutes (600 seconds).'),
+    '#default_value' => $expiration,
+    '#min' => 60,
+    '#required' => TRUE,
+  );
+
+  $form['otp_sent_page_text'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Text of the confirmation page'),
+    '#description' => t('Shown after requesting a login code.'),
+    '#default_value' => $sent_page_text,
+  );
+
+  $form['otp_welcome_text'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Text after login'),
+    '#description' => t('Shown after a user signs in with a one-time code.'),
+    '#default_value' => $welcome_text,
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function otp_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id === 'user_login' || $form_id === 'user_login_block') {
+    // Reuse the core login form but replace its handlers and password field.
+    unset($form['pass'], $form['persistent_login']);
+
+    if (isset($form['name']['#type'])) {
+      $form['name']['#type'] = 'email';
+    }
+    $form['name']['#required'] = TRUE;
+
+    $form['#validate'] = array('otp_request_form_validate');
+    $form['#submit'] = array('otp_request_form_submit');
+
+    // Prevent immediate redirect via core destination handling; capture it for
+    // use after verification instead.
+    $destination = '';
+    if (!empty($_GET['destination']) && !url_is_external($_GET['destination'])) {
+      $destination = $_GET['destination'];
+    }
+
+    if (isset($form['destination'])) {
+      unset($form['destination']);
+    }
+
+    if (!empty($destination)) {
+      $form['otp_destination'] = array(
+        '#type' => 'hidden',
+        '#value' => $destination,
+      );
+      $_SESSION['otp_destination'] = $destination;
+    }
+
+    $form['#action'] = url('user/login');
+  }
+  elseif ($form_id === 'user_pass') {
+    $form = array();
+    $form['info'] = array(
+      '#markup' => t('Password-based login is disabled. Request a one-time code instead.'),
+    );
+    $form['#redirect'] = 'user/login';
+  }
+}
+
+/**
+ * Validate the OTP request form.
+ */
+function otp_request_form_validate($form, &$form_state) {
+  $mail = trim($form_state['values']['name']);
+  $users = user_load_multiple(array(), array('mail' => $mail, 'status' => 1));
+  $account = reset($users);
+
+  if (empty($account)) {
+    form_set_error('name', t('That e-mail address is not recognized.'));
+    return;
+  }
+
+  $form_state['otp_account'] = $account;
+}
+
+/**
+ * Submit handler for the OTP request form.
+ */
+function otp_request_form_submit($form, &$form_state) {
+  global $language;
+
+  $account = $form_state['otp_account'];
+
+  $config = config('otp.settings');
+  $code_length = $config->get('otp_code_length');
+  $code_length = $code_length !== NULL ? (int) $code_length : 6;
+
+  $expiration = $config->get('otp_expiration');
+  $expiration = $expiration !== NULL ? (int) $expiration : 600;
+
+  $code = otp_generate_code($code_length);
+  $expires_at = REQUEST_TIME + $expiration;
+
+  $destination = isset($form_state['values']['otp_destination']) ? $form_state['values']['otp_destination'] : '';
+  $destination = (!empty($destination) && !url_is_external($destination)) ? $destination : '';
+  if (empty($destination) && !empty($_SESSION['otp_destination']) && !url_is_external($_SESSION['otp_destination'])) {
+    $destination = $_SESSION['otp_destination'];
+  }
+
+  otp_store_active_login($account->uid, $account->mail, $code, $expires_at, $destination);
+
+  if (!empty($destination)) {
+    $_SESSION['otp_destination'] = $destination;
+  }
+
+  backdrop_mail('otp', 'login_code', $account->mail, $language, array(
+    'code' => $code,
+    'user' => $account,
+    'expires_in' => $expiration,
+  ));
+
+  $sent_page_text = $config->get('otp_sent_page_text');
+  if (empty($sent_page_text)) {
+    $sent_page_text = "We’ve just sent a login link to your email address. You should see it in your inbox shortly 😊";
+  }
+  backdrop_set_message(t($sent_page_text));
+  $form_state['redirect'] = 'user/login/verify';
+}
+
+/**
+ * OTP verification form.
+ */
+function otp_verify_form($form, &$form_state) {
+  $active = otp_get_active_login();
+
+  if (empty($active)) {
+    $form['info'] = array(
+      '#markup' => t('Request a code first on the <a href="@login">login page</a>.', array('@login' => url('user/login'))),
+    );
+    return $form;
+  }
+
+  if (REQUEST_TIME > $active['expires']) {
+    $form['info'] = array(
+      '#markup' => t('Your code has expired. <a href="@login">Request a new one</a>.', array('@login' => url('user/login'))),
+    );
+    otp_clear_active_login();
+    return $form;
+  }
+
+  $form['code'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Passcode'),
+    '#description' => t('Enter the code sent to %mail.', array('%mail' => $active['mail'])),
+    '#required' => TRUE,
+    '#size' => 10,
+    '#maxlength' => 10,
+  );
+
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Verify and sign in'),
+  );
+
+  return $form;
+}
+
+/**
+ * Validate the OTP verification form.
+ */
+function otp_verify_form_validate($form, &$form_state) {
+  $active = otp_get_active_login();
+
+  if (empty($active)) {
+    form_set_error('code', t('No active code found. Request a new one.'));
+    return;
+  }
+
+  if (REQUEST_TIME > $active['expires']) {
+    otp_clear_active_login();
+    form_set_error('code', t('This code has expired. Request a new one.'));
+    return;
+  }
+
+  $input_code = trim($form_state['values']['code']);
+
+  if ($input_code !== $active['code']) {
+    form_set_error('code', t('That code is not correct.'));
+    return;
+  }
+
+  $account = user_load($active['uid']);
+  if (empty($account) || !$account->status) {
+    otp_clear_active_login();
+    form_set_error('code', t('This account is unavailable.'));
+    return;
+  }
+
+  $form_state['otp_account'] = $account;
+}
+
+/**
+ * Submit handler for the OTP verification form.
+ */
+function otp_verify_form_submit($form, &$form_state) {
+  $account = $form_state['otp_account'];
+  $active = otp_get_active_login();
+
+  // Log the user in.
+  global $user;
+  $user = $account;
+  user_login_finalize();
+
+  otp_clear_active_login();
+
+  $config = config('otp.settings');
+  $welcome_text = $config->get('otp_welcome_text');
+  if (empty($welcome_text)) {
+    $welcome_text = "Welcome back! 🎉 You’re now signed in using your one-time login link.";
+  }
+  backdrop_set_message(t($welcome_text));
+
+  $session_destination = isset($_SESSION['otp_destination']) ? $_SESSION['otp_destination'] : '';
+  $redirect = !empty($active['destination']) ? $active['destination'] : (!empty($session_destination) ? $session_destination : 'user');
+
+  unset($_SESSION['otp_destination']);
+
+  // Force redirect to the stored destination, bypassing any other handlers.
+  backdrop_goto($redirect);
+}
+
+/**
+ * Implements hook_mail().
+ */
+function otp_mail($key, &$message, $params) {
+  switch ($key) {
+    case 'login_code':
+      $site_name = config_get('system.core', 'site_name');
+      $expires_minutes = round($params['expires_in'] / 60);
+
+      $message['subject'] = t('Your login code for @site', array('@site' => $site_name));
+      $message['body'][] = t('Here is your one-time passcode: @code', array('@code' => $params['code']));
+      $message['body'][] = t('Enter this code on the verification page to finish signing in.');
+      $message['body'][] = t('This code expires in @minutes minute(s).', array('@minutes' => $expires_minutes));
+        $message['body'][] = url('user/login/verify', array('absolute' => TRUE));
+      break;
+  }
+}
+
+/**
+ * Generate a numeric code of a given length.
+ */
+function otp_generate_code($length = 6) {
+  $length = (int) $length;
+  $length = ($length >= 4 && $length <= 10) ? $length : 6;
+
+  $code = '';
+  for ($i = 0; $i < $length; $i++) {
+    $code .= mt_rand(0, 9);
+  }
+
+  return $code;
+}
+
+/**
+ * Store active login details in the session.
+ */
+function otp_store_active_login($uid, $mail, $code, $expires, $destination = '') {
+  $_SESSION['otp_login'] = array(
+    'uid' => $uid,
+    'mail' => $mail,
+    'code' => $code,
+    'expires' => $expires,
+    'destination' => $destination,
+  );
+}
+
+/**
+ * Retrieve the active login session record.
+ */
+function otp_get_active_login() {
+  return isset($_SESSION['otp_login']) ? $_SESSION['otp_login'] : array();
+}
+
+/**
+ * Clear any active login session record.
+ */
+function otp_clear_active_login() {
+  unset($_SESSION['otp_login']);
+}

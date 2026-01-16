@@ -1,0 +1,7 @@
+name = OTP Login
+description = Provides a one-time passcode login option.
+backdrop = 1.x
+type = module
+configure = admin/config/people/otp
+maintainers[alanmels] = Alan Mels
+maintainers_wanted = TRUE
