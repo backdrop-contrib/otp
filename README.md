@@ -20,7 +20,7 @@ Provides a lightweight one-time passcode (OTP) login flow.
 ## Issues
 
 Bugs and feature requests should be reported in the issue queue:
-https://github.com/backdrop-contrib/tab_icons/issues.
+https://github.com/backdrop-contrib/otp/issues.
 
 ## Current Maintainers
 
