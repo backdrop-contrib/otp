@@ -210,6 +210,24 @@ function otp_form_alter(&$form, &$form_state, $form_id) {
     );
     $form['#redirect'] = 'user/login';
   }
+  elseif ($form_id === 'user_register_form') {
+    // Hide the password field and supply a system-generated password to satisfy
+    // core validation while keeping the form passwordless for users.
+    $generated = user_password();
+
+    if (isset($form['pass'])) {
+      $form['pass'] = array(
+        '#type' => 'value',
+        '#value' => $generated,
+      );
+    }
+    elseif (isset($form['account']['pass'])) {
+      $form['account']['pass'] = array(
+        '#type' => 'value',
+        '#value' => $generated,
+      );
+    }
+  }
 }
 
 /**
