@@ -1,6 +1,6 @@
 # OTP Login
 
-Provides a lightweight one-time passcode (OTP) login flow.
+Provides a one-time passcode login flow where users receive a short code by email and type it into the site to log in, instead of using password or “magic link” logins.
 
 ## Features
 - Request a numeric login code at `/user/login`.
