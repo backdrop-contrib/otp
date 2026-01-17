@@ -122,7 +122,7 @@ function otp_settings() {
 
   $sent_page_text = $config->get('otp_sent_page_text');
   if (empty($sent_page_text)) {
-    $sent_page_text = "We’ve just sent a login link to your email address. You should see it in your inbox shortly 😊";
+    $sent_page_text = "We’ve just sent a login link to your email address. You should see it in your inbox shortly 😊 If you don’t see it soon, please check your spam or junk folder.";
   }
 
   $welcome_text = $config->get('otp_welcome_text');
@@ -163,6 +163,16 @@ function otp_settings() {
     '#default_value' => $welcome_text,
   );
 
+  $form['otp_redirect_to_referrer'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Return users to the page they started from'),
+    '#description' => t('When enabled, successful OTP logins redirect back to the page where the user clicked Log in, unless a destination was explicitly provided.'),
+    '#default_value' => (bool) $config->get('otp_redirect_to_referrer'),
+  );
+
+  // Persist settings to otp.settings config.
+  $form['#config'] = 'otp.settings';
+
   return system_settings_form($form);
 }
 
@@ -184,9 +194,32 @@ function otp_form_alter(&$form, &$form_state, $form_id) {
 
     // Prevent immediate redirect via core destination handling; capture it for
     // use after verification instead.
+    $config = config('otp.settings');
+    $allow_referrer_redirect = (bool) $config->get('otp_redirect_to_referrer');
+
     $destination = '';
     if (!empty($_GET['destination']) && !url_is_external($_GET['destination'])) {
       $destination = $_GET['destination'];
+    }
+
+    // If allowed and no destination was explicitly provided, derive one from
+    // the referer when it is internal and not a login page.
+    if (empty($destination) && $allow_referrer_redirect && !empty($_SERVER['HTTP_REFERER']) && !url_is_external($_SERVER['HTTP_REFERER'])) {
+      $parsed = backdrop_parse_url($_SERVER['HTTP_REFERER']);
+      $path = isset($parsed['path']) ? trim($parsed['path'], '/') : '';
+      $disallowed = array('user/login', 'user/login/verify', 'user/register', 'user/password');
+      if ($path !== '' && !in_array($path, $disallowed, TRUE)) {
+        $destination = $path;
+        if (!empty($parsed['query'])) {
+          $destination .= '?' . backdrop_http_build_query($parsed['query']);
+        }
+      }
+    }
+
+    // If still empty, allow a home-page fallback when the referrer was the
+    // front page (common when clicking Log in from the homepage).
+    if (empty($destination) && $allow_referrer_redirect) {
+      $destination = '<front>';
     }
 
     if (isset($form['destination'])) {
@@ -284,7 +317,7 @@ function otp_request_form_submit($form, &$form_state) {
 
   $sent_page_text = $config->get('otp_sent_page_text');
   if (empty($sent_page_text)) {
-    $sent_page_text = "We’ve just sent a login link to your email address. You should see it in your inbox shortly 😊";
+    $sent_page_text = "We’ve just sent a login link to your email address. You should see it in your inbox shortly 😊 If you don’t see it soon, please check your spam or junk folder.";
   }
   backdrop_set_message(t($sent_page_text));
   $form_state['redirect'] = 'user/login/verify';
