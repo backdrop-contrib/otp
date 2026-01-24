@@ -1,0 +1,79 @@
+<?php
+
+/**
+ * Update user mail templates for OTP-only login.
+ */
+function otp_update_1001() {
+  $mail_config = config('user.mail');
+
+  $mail_config->set('cancel_confirm_body', "[user:name],\n\nA request to cancel your account has been made at [site:name].\n\nYou can confirm cancellation at [site:url:brief] by using this link:\n\n[user:cancel-url]\n\nNOTE: The cancellation of your account is not reversible. If you didn't request this, you can ignore this email.\n\nThis link expires in one day.\n\n--  [site:name] team");
+  $mail_config->set('cancel_confirm_subject', 'Account cancellation request for [user:name] at [site:name]');
+
+  $mail_config->set('password_reset_body', "[user:name],\n\nYou requested to access your account at [site:name].\n\nPasswords are disabled. To sign in, go to [site:login-url] and request a one-time login code using this email address.\n\nIf you didn't request access, you can safely ignore this email.\n\n--  [site:name] team");
+  $mail_config->set('password_reset_subject', 'Login instructions for [user:name] at [site:name]');
+
+  $mail_config->set('register_admin_created_body', "[user:name],\n\nWelcome! An administrator created an account for you at [site:name].\n\nA second email with your one-time login code will arrive shortly. Use that code to sign in—no password required.\n\n--  [site:name] team");
+  $mail_config->set('register_admin_created_subject', 'An administrator created an account for [user:name] at [site:name]');
+
+  $mail_config->set('register_no_approval_required_body', "[user:name],\n\nThanks for registering at [site:name]. To finish signing in, go to [site:login-url] and request a one-time login code using this email address.\n\nNo password is needed; you'll receive a code each time you want to log in.\n\n--  [site:name] team");
+  $mail_config->set('register_no_approval_required_subject', 'Account details for [user:name] at [site:name]');
+
+  $mail_config->set('register_pending_approval_body', "[user:name],\n\nThank you for registering at [site:name]. Your application is pending approval. Once approved, you will receive another email with instructions to request a one-time login code. No password is required; you'll sign in using your email address.\n\n--  [site:name] team");
+  $mail_config->set('register_pending_approval_subject', 'Account details for [user:name] at [site:name] (pending admin approval)');
+
+  $mail_config->set('register_pending_approval_admin_body', "[user:name] has applied for an account.\n\n[user:edit-url]");
+  $mail_config->set('register_pending_approval_admin_subject', 'New account of [user:name] at [site:name] (pending approval)');
+
+  $mail_config->set('status_activated_body', "[user:name],\n\nYour account at [site:name] has been activated.\n\nTo sign in, go to [site:login-url] and request a one-time login code using this email address.\n\nNo password is needed; you'll receive a code each time you want to log in.\n\n--  [site:name] team");
+  $mail_config->set('status_activated_subject', 'Account details for [user:name] at [site:name] (approved)');
+
+  $mail_config->set('status_blocked_body', "[user:name],\n\nYour account on [site:name] has been blocked.\n\n--  [site:name] team");
+  $mail_config->set('status_blocked_subject', 'Account details for [user:name] at [site:name] (blocked)');
+
+  $mail_config->set('status_canceled_body', "[user:name],\n\nYour account on [site:name] has been canceled.\n\n--  [site:name] team");
+  $mail_config->set('status_canceled_subject', 'Account details for [user:name] at [site:name] (canceled)');
+
+  $mail_config->save();
+
+  return t('Updated user mail templates for OTP.');
+}
+
+/**
+ * Rebuild menus so email confirmation access rules apply to all users.
+ */
+function otp_update_1002() {
+  menu_rebuild();
+  return t('Rebuilt menus for OTP email confirmation route.');
+}
+
+/**
+ * Seed default OTP mail templates in config.
+ */
+function otp_update_1003() {
+  $config = config('otp.settings');
+  $defaults = otp_mail_template_defaults();
+  $changed = FALSE;
+
+  $map = array(
+    'otp_mail_login_code_subject' => $defaults['login_code']['subject'],
+    'otp_mail_login_code_body' => $defaults['login_code']['body'],
+    'otp_mail_email_change_old_subject' => $defaults['email_change_old']['subject'],
+    'otp_mail_email_change_old_body' => $defaults['email_change_old']['body'],
+    'otp_mail_email_change_new_subject' => $defaults['email_change_new']['subject'],
+    'otp_mail_email_change_new_body' => $defaults['email_change_new']['body'],
+  );
+
+  foreach ($map as $key => $value) {
+    $existing = $config->get($key);
+    if ($existing === NULL) {
+      $config->set($key, $value);
+      $changed = TRUE;
+    }
+  }
+
+  if ($changed) {
+    $config->save();
+  }
+
+  return t('Seeded OTP mail template defaults.');
+}

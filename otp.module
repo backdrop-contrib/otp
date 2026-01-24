@@ -35,22 +35,22 @@ function otp_update_user_mail_templates() {
   $mail_config->set('cancel_confirm_body', "[user:name],\n\nA request to cancel your account has been made at [site:name].\n\nYou can confirm cancellation at [site:url:brief] by using this link:\n\n[user:cancel-url]\n\nNOTE: The cancellation of your account is not reversible. If you didn't request this, you can ignore this email.\n\nThis link expires in one day.\n\n--  [site:name] team");
   $mail_config->set('cancel_confirm_subject', 'Account cancellation request for [user:name] at [site:name]');
 
-  $mail_config->set('password_reset_body', "[user:name],\n\nYou requested a one-time login link for your account at [site:name].\n\nUse this link to finish signing in:\n\n[user:one-time-login-url]\n\nNo password is required. The link works once and expires after one day. If you didn't request it, you can safely ignore this email.\n\n--  [site:name] team");
-  $mail_config->set('password_reset_subject', 'One-time login link for [user:name] at [site:name]');
+  $mail_config->set('password_reset_body', "[user:name],\n\nYou requested to access your account at [site:name].\n\nPasswords are disabled. To sign in, go to [site:login-url] and request a one-time login code using this email address.\n\nIf you didn't request access, you can safely ignore this email.\n\n--  [site:name] team");
+  $mail_config->set('password_reset_subject', 'Login instructions for [user:name] at [site:name]');
 
-  $mail_config->set('register_admin_created_body', "[user:name],\n\nA site administrator at [site:name] created an account for you. Use this one-time link to sign in and complete setup:\n\n[user:one-time-login-url]\n\nNo password is needed. After signing in, go to [site:login-url] anytime and request a one-time code using this email address.\n\n--  [site:name] team");
+  $mail_config->set('register_admin_created_body', "[user:name],\n\nWelcome! An administrator created an account for you at [site:name].\n\nA second email with your one-time login code will arrive shortly. Use that code to sign in—no password required.\n\n--  [site:name] team");
   $mail_config->set('register_admin_created_subject', 'An administrator created an account for [user:name] at [site:name]');
 
-  $mail_config->set('register_no_approval_required_body', "[user:name],\n\nThanks for registering at [site:name]. Use this one-time link to sign in and confirm your email:\n\n[user:one-time-login-url]\n\nNo password is needed. After signing in, go to [site:login-url] anytime and request a one-time code using this email address.\n\n--  [site:name] team");
+  $mail_config->set('register_no_approval_required_body', "[user:name],\n\nThanks for registering at [site:name]. To finish signing in, go to [site:login-url] and request a one-time login code using this email address.\n\nNo password is needed; you'll receive a code each time you want to log in.\n\n--  [site:name] team");
   $mail_config->set('register_no_approval_required_subject', 'Account details for [user:name] at [site:name]');
 
-  $mail_config->set('register_pending_approval_body', "[user:name],\n\nThank you for registering at [site:name]. Your application is pending approval. Once approved, you will receive another email with a one-time login link. No password is required; you'll sign in using your email address.\n\n--  [site:name] team");
+  $mail_config->set('register_pending_approval_body', "[user:name],\n\nThank you for registering at [site:name]. Your application is pending approval. Once approved, you will receive another email with instructions to request a one-time login code. No password is required; you'll sign in using your email address.\n\n--  [site:name] team");
   $mail_config->set('register_pending_approval_subject', 'Account details for [user:name] at [site:name] (pending admin approval)');
 
   $mail_config->set('register_pending_approval_admin_body', "[user:name] has applied for an account.\n\n[user:edit-url]");
   $mail_config->set('register_pending_approval_admin_subject', 'New account of [user:name] at [site:name] (pending approval)');
 
-  $mail_config->set('status_activated_body', "[user:name],\n\nYour account at [site:name] has been activated.\n\nUse this one-time link to sign in now:\n\n[user:one-time-login-url]\n\nNo password is needed. After signing in, go to [site:login-url] anytime and request a one-time code using this email address.\n\n--  [site:name] team");
+  $mail_config->set('status_activated_body', "[user:name],\n\nYour account at [site:name] has been activated.\n\nTo sign in, go to [site:login-url] and request a one-time login code using this email address.\n\nNo password is needed; you'll receive a code each time you want to log in.\n\n--  [site:name] team");
   $mail_config->set('status_activated_subject', 'Account details for [user:name] at [site:name] (approved)');
 
   $mail_config->set('status_blocked_body', "[user:name],\n\nYour account on [site:name] has been blocked.\n\n--  [site:name] team");
@@ -63,6 +63,19 @@ function otp_update_user_mail_templates() {
 }
 
 /**
+ * Implements hook_user_insert().
+ *
+ * Send a first-use OTP code when an active account is created.
+ */
+function otp_user_insert($account) {
+  if (empty($account->status)) {
+    return;
+  }
+
+  otp_send_login_code($account);
+}
+
+/**
  * Implements hook_init().
  */
 function otp_init() {
@@ -70,6 +83,23 @@ function otp_init() {
     // Persist destination early in the request lifecycle to survive form
     // rebuilds and redirects during the OTP flow.
     $_SESSION['otp_destination'] = $_GET['destination'];
+  }
+
+  // Allow one-time login tokens delivered via email to bootstrap an active OTP
+  // session without prior form submission.
+  if (user_is_anonymous() && !empty($_GET['otp_token'])) {
+    $parsed = otp_parse_token($_GET['otp_token']);
+    if (!empty($parsed)) {
+      otp_store_active_login($parsed['uid'], $parsed['mail'], $parsed['code'], $parsed['expires'], $parsed['destination']);
+      backdrop_set_message(t('Enter the code we sent to complete sign-in.'));
+      backdrop_goto('user/login/verify');
+    }
+  }
+
+  // Block password reset URLs and direct users to the OTP login flow instead.
+  if (user_is_anonymous() && arg(0) === 'user' && arg(1) === 'reset') {
+    backdrop_set_message(t('Password resets are disabled. Request a one-time login link instead.'), 'warning');
+    backdrop_goto('user/login');
   }
 }
 
@@ -93,6 +123,13 @@ function otp_menu() {
     'page callback' => 'otp_verify_page',
     'access callback' => 'otp_login_access',
     'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['user/email/confirm'] = array(
+    'title' => t('Confirm your email change'),
+    'page callback' => 'otp_email_confirm_page',
+    'access callback' => 'otp_email_confirm_access',
+    'type' => MENU_CALLBACK,
   );
 
   $items['admin/config/people/otp'] = array(
@@ -160,6 +197,13 @@ function otp_login_access() {
 }
 
 /**
+ * Access callback for email confirmation; open to all users.
+ */
+function otp_email_confirm_access() {
+  return TRUE;
+}
+
+/**
  * Settings form.
  */
 function otp_settings() {
@@ -180,6 +224,26 @@ function otp_settings() {
   if (empty($welcome_text)) {
     $welcome_text = "Welcome back! 🎉 You’re now signed in using your one-time login link.";
   }
+
+  $mail_defaults = otp_mail_template_defaults();
+
+  $login_code_subject = $config->get('otp_mail_login_code_subject');
+  $login_code_subject = $login_code_subject !== NULL && $login_code_subject !== '' ? $login_code_subject : $mail_defaults['login_code']['subject'];
+
+  $login_code_body = $config->get('otp_mail_login_code_body');
+  $login_code_body = $login_code_body !== NULL && $login_code_body !== '' ? $login_code_body : $mail_defaults['login_code']['body'];
+
+  $email_change_old_subject = $config->get('otp_mail_email_change_old_subject');
+  $email_change_old_subject = $email_change_old_subject !== NULL && $email_change_old_subject !== '' ? $email_change_old_subject : $mail_defaults['email_change_old']['subject'];
+
+  $email_change_old_body = $config->get('otp_mail_email_change_old_body');
+  $email_change_old_body = $email_change_old_body !== NULL && $email_change_old_body !== '' ? $email_change_old_body : $mail_defaults['email_change_old']['body'];
+
+  $email_change_new_subject = $config->get('otp_mail_email_change_new_subject');
+  $email_change_new_subject = $email_change_new_subject !== NULL && $email_change_new_subject !== '' ? $email_change_new_subject : $mail_defaults['email_change_new']['subject'];
+
+  $email_change_new_body = $config->get('otp_mail_email_change_new_body');
+  $email_change_new_body = $email_change_new_body !== NULL && $email_change_new_body !== '' ? $email_change_new_body : $mail_defaults['email_change_new']['body'];
 
   $form['otp_code_length'] = array(
     '#type' => 'number',
@@ -221,10 +285,108 @@ function otp_settings() {
     '#default_value' => (bool) $config->get('otp_redirect_to_referrer'),
   );
 
+  $form['otp_mail'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Email templates'),
+    '#description' => t('Customize the OTP-related email subjects and bodies. Available tokens: [site:name], [user:name], [otp:code], [otp:minutes], [otp:link].'),
+  );
+
+  $form['otp_mail']['otp_mail_login_code_subject'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Login code subject'),
+    '#default_value' => $login_code_subject,
+  );
+
+  $form['otp_mail']['otp_mail_login_code_body'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Login code body'),
+    '#default_value' => $login_code_body,
+    '#description' => t('Use [otp:code] for the passcode, [otp:minutes] for the expiration in minutes, and [otp:link] for the direct verify link.'),
+    '#rows' => 6,
+  );
+
+  $form['otp_mail']['otp_mail_email_change_old_subject'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Email change notice (old address) subject'),
+    '#default_value' => $email_change_old_subject,
+  );
+
+  $form['otp_mail']['otp_mail_email_change_old_body'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Email change notice (old address) body'),
+    '#default_value' => $email_change_old_body,
+    '#description' => t('Use [site:name] for the site name and [user:name] for the account name.'),
+    '#rows' => 8,
+  );
+
+  $form['otp_mail']['otp_mail_email_change_new_subject'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Email change confirmation (new address) subject'),
+    '#default_value' => $email_change_new_subject,
+  );
+
+  $form['otp_mail']['otp_mail_email_change_new_body'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Email change confirmation (new address) body'),
+    '#default_value' => $email_change_new_body,
+    '#description' => t('Use [otp:link] for the confirmation URL, [site:name] for the site name, and [user:name] for the account name.'),
+    '#rows' => 10,
+  );
+
   // Persist settings to otp.settings config.
   $form['#config'] = 'otp.settings';
 
   return system_settings_form($form);
+}
+
+/**
+ * Default mail templates for OTP messages.
+ */
+function otp_mail_template_defaults() {
+  return array(
+    'login_code' => array(
+      'subject' => 'Your login code for [site:name]',
+      'body' => "Hello,\n\nHere’s your one-time passcode: [otp:code]\n\nPlease enter it on the verification page to complete your sign-in.\nThis code will expire in [otp:minutes] minute(s), so be sure to use it soon.\n\nWhen you’re ready, continue by opening this link: [otp:link]\n\nThank you,\n[site:name]",
+    ),
+    'email_change_old' => array(
+      'subject' => 'Email change requested for [site:name]',
+      'body' => "Hello,\n\nWe wanted to let you know that someone recently requested to update the email address on your [site:name] account.\n\nIf you made this request, you are all set -- no action needed. The update will only go through once it is confirmed from the new email address.\n\nIf you did not request this change, please log in and review your account details right away, or reach out to the [site:name] support team so we can help keep your account secure.\n\nThank you,\n[site:name]",
+    ),
+    'email_change_new' => array(
+      'subject' => 'Confirm your email change for [site:name]',
+      'body' => "Hello,\n\nWe received a request to update the email address on your [site:name] account.\n\nIf you made this request, please go ahead and confirm the change using the link below:\n[otp:link]\n\nIf you did not request this, no worries -- you can simply ignore this message and your email will stay the same. Nothing will be changed unless the request is confirmed.\n\nIf you have any questions or think this might have been a mistake, please reach out to the [site:name] support team -- we are here to help.\n\nThank you,\n[site:name]",
+    ),
+  );
+}
+
+/**
+ * Retrieve mail text from config with a default fallback.
+ */
+function otp_mail_get_text($config_key, $default) {
+  $config = config('otp.settings');
+  $value = $config->get($config_key);
+  return ($value !== NULL && $value !== '') ? $value : $default;
+}
+
+/**
+ * Prepare mail body lines with replacements.
+ */
+function otp_mail_prepare_lines($text, array $replacements) {
+  // Normalize line breaks, trim, and strip all blank lines to avoid extra
+  // spacing in emails.
+  $normalized = trim(str_replace(array("\r\n", "\r"), "\n", $text));
+  $lines = explode("\n", $normalized);
+  $prepared = array();
+
+  foreach ($lines as $line) {
+    $line = trim($line);
+    if ($line === '') {
+      continue;
+    }
+    $prepared[] = strtr($line, $replacements);
+  }
+
+  return $prepared;
 }
 
 /**
@@ -312,6 +474,14 @@ function otp_form_alter(&$form, &$form_state, $form_id) {
       );
     }
   }
+  elseif ($form_id === 'user_pass_reset_form') {
+    // Disable password resets; direct users to request a one-time code instead.
+    $form = array();
+    $form['info'] = array(
+      '#markup' => t('Password resets are disabled. Request a one-time login link instead.'),
+    );
+    $form['#redirect'] = 'user/login';
+  }
   elseif ($form_id === 'user_profile_form') {
     // Remove all password-related fields from the profile edit form.
     if (isset($form['account']['pass'])) {
@@ -324,10 +494,16 @@ function otp_form_alter(&$form, &$form_state, $form_id) {
     unset($form['account']['current_pass'], $form['account']['current_pass_required_values']);
 
     if (!empty($form['#validate'])) {
-      $form['#validate'] = array_values(array_filter($form['#validate'], function ($callback) {
+      $callbacks = is_array($form['#validate']) ? $form['#validate'] : array($form['#validate']);
+      $callbacks = array_values(array_filter($callbacks, function ($callback) {
         return $callback !== 'user_validate_current_pass';
       }));
+      $form['#validate'] = $callbacks;
     }
+
+    // Intercept email changes for confirmation.
+    $form['#validate'][] = 'otp_email_change_validate';
+    $form['#submit'][] = 'otp_email_change_submit';
   }
 }
 
@@ -345,6 +521,65 @@ function otp_request_form_validate($form, &$form_state) {
   }
 
   $form_state['otp_account'] = $account;
+}
+
+/**
+ * Validate email changes on the profile form.
+ */
+function otp_email_change_validate($form, &$form_state) {
+  $account = $form['#user'];
+  $original_mail = isset($account->mail) ? trim($account->mail) : '';
+  $new_mail = isset($form_state['values']['mail']) ? trim($form_state['values']['mail']) : '';
+
+  if ($new_mail === '' || $new_mail === $original_mail) {
+    return;
+  }
+
+  if (!valid_email_address($new_mail)) {
+    form_set_error('mail', t('Enter a valid email address.'));
+    return;
+  }
+
+  // Ensure the new address is not already taken.
+  $mail_taken = (bool) db_select('users')
+    ->fields('users', array('uid'))
+    ->condition('uid', (int) $account->uid, '<>')
+    ->condition('mail', db_like($new_mail), 'LIKE')
+    ->range(0, 1)
+    ->execute()
+    ->fetchField();
+
+  if ($mail_taken) {
+    form_set_error('mail', t('The email address %email is already in use.', array('%email' => $new_mail)));
+    return;
+  }
+
+  // Stage the request and keep the live email unchanged until confirmation.
+  $form_state['otp_email_change'] = array(
+    'new_mail' => $new_mail,
+    'old_mail' => $original_mail,
+  );
+
+  // Prevent immediate change by restoring the current email.
+  $form_state['values']['mail'] = $original_mail;
+}
+
+/**
+ * Submit handler to queue email change confirmation.
+ */
+function otp_email_change_submit($form, &$form_state) {
+  if (empty($form_state['otp_email_change'])) {
+    return;
+  }
+
+  $data = $form_state['otp_email_change'];
+  $account = user_load($form['#user']->uid);
+  if (!$account) {
+    return;
+  }
+
+  otp_queue_email_change($account, $data['new_mail'], $data['old_mail']);
+  backdrop_set_message(t('We sent a confirmation to the new email address. The change will complete after confirmation.'));
 }
 
 /**
@@ -377,11 +612,7 @@ function otp_request_form_submit($form, &$form_state) {
     $_SESSION['otp_destination'] = $destination;
   }
 
-  backdrop_mail('otp', 'login_code', $account->mail, $language, array(
-    'code' => $code,
-    'user' => $account,
-    'expires_in' => $expiration,
-  ));
+  otp_send_login_code($account, $code, $expires_at, $destination);
 
   $sent_page_text = $config->get('otp_sent_page_text');
   if (empty($sent_page_text)) {
@@ -498,16 +729,63 @@ function otp_verify_form_submit($form, &$form_state) {
  * Implements hook_mail().
  */
 function otp_mail($key, &$message, $params) {
+  $defaults = otp_mail_template_defaults();
+  $config = config('otp.settings');
+
   switch ($key) {
     case 'login_code':
       $site_name = config_get('system.core', 'site_name');
       $expires_minutes = round($params['expires_in'] / 60);
 
-      $message['subject'] = t('Your login code for @site', array('@site' => $site_name));
-      $message['body'][] = t('Here is your one-time passcode: @code', array('@code' => $params['code']));
-      $message['body'][] = t('Enter this code on the verification page to finish signing in.');
-      $message['body'][] = t('This code expires in @minutes minute(s).', array('@minutes' => $expires_minutes));
-        $message['body'][] = url('user/login/verify', array('absolute' => TRUE));
+      $verify_url = url('user/login/verify', array(
+        'absolute' => TRUE,
+        'query' => !empty($params['token']) ? array('otp_token' => $params['token']) : array(),
+      ));
+
+      $subject = otp_mail_get_text('otp_mail_login_code_subject', $defaults['login_code']['subject']);
+      $body = otp_mail_get_text('otp_mail_login_code_body', $defaults['login_code']['body']);
+
+      $replacements = array(
+        '[site:name]' => $site_name,
+        '[user:name]' => $params['user']->name,
+        '[otp:code]' => $params['code'],
+        '[otp:minutes]' => $expires_minutes,
+        '[otp:link]' => $verify_url,
+      );
+
+      $message['subject'] = strtr($subject, $replacements);
+      $message['body'] = otp_mail_prepare_lines($body, $replacements);
+      break;
+
+    case 'email_change_old':
+      $site_name = config_get('system.core', 'site_name');
+      $subject = otp_mail_get_text('otp_mail_email_change_old_subject', $defaults['email_change_old']['subject']);
+      $body = otp_mail_get_text('otp_mail_email_change_old_body', $defaults['email_change_old']['body']);
+
+      $replacements = array(
+        '[site:name]' => $site_name,
+        '[user:name]' => $params['user']->name,
+      );
+
+      $message['subject'] = strtr($subject, $replacements);
+      $message['body'] = otp_mail_prepare_lines($body, $replacements);
+      break;
+
+    case 'email_change_new':
+      $site_name = config_get('system.core', 'site_name');
+      $confirm_url = url('user/email/confirm', array('absolute' => TRUE, 'query' => array('token' => $params['token'])));
+
+      $subject = otp_mail_get_text('otp_mail_email_change_new_subject', $defaults['email_change_new']['subject']);
+      $body = otp_mail_get_text('otp_mail_email_change_new_body', $defaults['email_change_new']['body']);
+
+      $replacements = array(
+        '[site:name]' => $site_name,
+        '[otp:link]' => $confirm_url,
+        '[user:name]' => $params['user']->name,
+      );
+
+      $message['subject'] = strtr($subject, $replacements);
+      $message['body'] = otp_mail_prepare_lines($body, $replacements);
       break;
   }
 }
@@ -525,6 +803,203 @@ function otp_generate_code($length = 6) {
   }
 
   return $code;
+}
+
+/**
+ * Send a one-time login code email, generating values if needed.
+ */
+function otp_send_login_code($account, $code = NULL, $expires_at = NULL, $destination = '') {
+  global $language;
+
+  $config = config('otp.settings');
+  $code_length = $config->get('otp_code_length');
+  $code_length = $code_length !== NULL ? (int) $code_length : 6;
+
+  $expiration = $config->get('otp_expiration');
+  $expiration = $expiration !== NULL ? (int) $expiration : 600;
+
+  $code = $code !== NULL ? $code : otp_generate_code($code_length);
+  $expires_at = $expires_at !== NULL ? $expires_at : REQUEST_TIME + $expiration;
+
+  $token = otp_build_token($account->uid, $account->mail, $code, $expires_at, $destination);
+
+  backdrop_mail('otp', 'login_code', $account->mail, $language, array(
+    'code' => $code,
+    'user' => $account,
+    'expires_in' => $expiration,
+    'token' => $token,
+  ));
+}
+
+/**
+ * Queue an email change confirmation and notify both old and new addresses.
+ */
+function otp_queue_email_change($account, $new_mail, $old_mail) {
+  $expires = REQUEST_TIME + 86400; // 24 hours.
+
+  // Persist pending email change on the user account to prevent stale tokens.
+  $account->data['otp_pending_email'] = array(
+    'new_mail' => $new_mail,
+    'old_mail' => $old_mail,
+    'expires' => $expires,
+    'requested' => REQUEST_TIME,
+  );
+  $account->save();
+
+  $token = otp_build_email_change_token($account->uid, $new_mail, $old_mail, $expires, $account->data['otp_pending_email']['requested']);
+
+  // Notify old email.
+  backdrop_mail('otp', 'email_change_old', $old_mail, $GLOBALS['language'], array(
+    'user' => $account,
+  ));
+
+  // Notify new email with a confirmation link.
+  backdrop_mail('otp', 'email_change_new', $new_mail, $GLOBALS['language'], array(
+    'user' => $account,
+    'token' => $token,
+    'expires' => $expires,
+  ));
+}
+
+/**
+ * Build a signed token encapsulating an OTP login payload.
+ */
+function otp_build_token($uid, $mail, $code, $expires, $destination = '') {
+  $payload = array(
+    'uid' => (int) $uid,
+    'mail' => (string) $mail,
+    'code' => (string) $code,
+    'expires' => (int) $expires,
+    'destination' => (string) $destination,
+  );
+
+  $serialized = json_encode($payload);
+  $secret = backdrop_get_private_key();
+  $signature = hash_hmac('sha256', $serialized, $secret);
+
+  return base64_encode(json_encode(array('d' => $serialized, 'h' => $signature)));
+}
+
+/**
+ * Build a signed token for email change confirmation.
+ */
+function otp_build_email_change_token($uid, $new_mail, $old_mail, $expires, $requested) {
+  $payload = array(
+    'uid' => (int) $uid,
+    'new_mail' => (string) $new_mail,
+    'old_mail' => (string) $old_mail,
+    'expires' => (int) $expires,
+    'requested' => (int) $requested,
+  );
+
+  $serialized = json_encode($payload);
+  $secret = backdrop_get_private_key();
+  $signature = hash_hmac('sha256', $serialized, $secret);
+
+  return base64_encode(json_encode(array('d' => $serialized, 'h' => $signature)));
+}
+
+/**
+ * Validate and unpack an email change token.
+ */
+function otp_parse_email_change_token($token) {
+  $decoded = json_decode(base64_decode($token), TRUE);
+  if (empty($decoded['d']) || empty($decoded['h'])) {
+    return array();
+  }
+
+  $serialized = $decoded['d'];
+  $expected = hash_hmac('sha256', $serialized, backdrop_get_private_key());
+  if (!hash_equals($expected, $decoded['h'])) {
+    return array();
+  }
+
+  $payload = json_decode($serialized, TRUE);
+  if (empty($payload) || !isset($payload['expires'])) {
+    return array();
+  }
+
+  if (REQUEST_TIME > (int) $payload['expires']) {
+    return array();
+  }
+
+  return $payload;
+}
+
+/**
+ * Page callback to confirm an email change request.
+ */
+function otp_email_confirm_page() {
+  $token = isset($_GET['token']) ? $_GET['token'] : '';
+  $parsed = $token ? otp_parse_email_change_token($token) : array();
+
+  if (empty($parsed)) {
+    backdrop_set_message(t('This email confirmation link is invalid or has expired.'), 'error');
+    return backdrop_get_form('user_login');
+  }
+
+  $account = user_load($parsed['uid']);
+  if (empty($account)) {
+    backdrop_set_message(t('We could not find that account.'), 'error');
+    return backdrop_get_form('user_login');
+  }
+
+  $pending = isset($account->data['otp_pending_email']) ? $account->data['otp_pending_email'] : array();
+  if (empty($pending) || $pending['new_mail'] !== $parsed['new_mail'] || $pending['requested'] !== $parsed['requested']) {
+    backdrop_set_message(t('This email change request is no longer valid.'), 'error');
+    return backdrop_get_form('user_login');
+  }
+
+  if (REQUEST_TIME > (int) $pending['expires']) {
+    backdrop_set_message(t('This email change request has expired. Please start again.'), 'error');
+    return backdrop_get_form('user_login');
+  }
+
+  $account->mail = $parsed['new_mail'];
+  unset($account->data['otp_pending_email']);
+  $account->save();
+
+  global $user;
+  $already_same_user = user_is_logged_in() && !empty($user->uid) && ((int) $user->uid === (int) $account->uid);
+
+  if ($already_same_user) {
+    backdrop_set_message(t('Your email address has been updated.'));
+    backdrop_goto('user');
+  }
+
+  // Log the user in immediately after confirming the email change.
+  $user = $account;
+  user_login_finalize();
+
+  backdrop_set_message(t('Your email address has been updated and you are now signed in.'));
+  backdrop_goto('user');
+}
+
+/**
+ * Validate and unpack an OTP login token.
+ */
+function otp_parse_token($token) {
+  $decoded = json_decode(base64_decode($token), TRUE);
+  if (empty($decoded['d']) || empty($decoded['h'])) {
+    return array();
+  }
+
+  $serialized = $decoded['d'];
+  $expected = hash_hmac('sha256', $serialized, backdrop_get_private_key());
+  if (!hash_equals($expected, $decoded['h'])) {
+    return array();
+  }
+
+  $payload = json_decode($serialized, TRUE);
+  if (empty($payload) || !isset($payload['expires'])) {
+    return array();
+  }
+
+  if (REQUEST_TIME > (int) $payload['expires']) {
+    return array();
+  }
+
+  return $payload;
 }
 
 /**
