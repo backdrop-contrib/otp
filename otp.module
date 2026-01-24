@@ -274,6 +274,23 @@ function otp_form_alter(&$form, &$form_state, $form_id) {
       );
     }
   }
+  elseif ($form_id === 'user_profile_form') {
+    // Remove all password-related fields from the profile edit form.
+    if (isset($form['account']['pass'])) {
+      $form['account']['pass'] = array(
+        '#type' => 'value',
+        '#value' => '',
+      );
+    }
+
+    unset($form['account']['current_pass'], $form['account']['current_pass_required_values']);
+
+    if (!empty($form['#validate'])) {
+      $form['#validate'] = array_values(array_filter($form['#validate'], function ($callback) {
+        return $callback !== 'user_validate_current_pass';
+      }));
+    }
+  }
 }
 
 /**
