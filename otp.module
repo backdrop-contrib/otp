@@ -12,6 +12,19 @@ function otp_permission() {
 }
 
 /**
+ * Implements hook_enable().
+ */
+function otp_enable() {
+  $config = config('system.core');
+  $current = $config->get('user_login_method');
+
+  if ($current !== 'email_only') {
+    $config->set('user_login_method', 'email_only');
+    $config->save();
+  }
+}
+
+/**
  * Implements hook_init().
  */
 function otp_init() {
