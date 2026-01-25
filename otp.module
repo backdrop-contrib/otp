@@ -24,6 +24,9 @@ function otp_enable() {
   }
 
   otp_update_user_mail_templates();
+
+  // Remove password-reset menu links immediately on enable.
+  otp_prune_password_menu_links();
 }
 
 /**
@@ -85,6 +88,9 @@ function otp_init() {
     $_SESSION['otp_destination'] = $_GET['destination'];
   }
 
+  // Continuously prune password-reset menu links so they cannot reappear via rebuilds.
+  otp_prune_password_menu_links();
+
   // Allow one-time login tokens delivered via email to bootstrap an active OTP
   // session without prior form submission.
   if (user_is_anonymous() && !empty($_GET['otp_token'])) {
@@ -101,6 +107,23 @@ function otp_init() {
     backdrop_set_message(t('Password resets are disabled. Request a one-time login link instead.'), 'warning');
     backdrop_goto('user/login');
   }
+}
+
+/**
+ * Remove password-reset menu links from all menus.
+ */
+function otp_prune_password_menu_links() {
+  static $ran = FALSE;
+  if ($ran) {
+    return;
+  }
+  $ran = TRUE;
+
+  // Delete menu links pointing to user/password across all menus.
+  db_query("DELETE FROM {menu_links} WHERE link_path = :path", array(':path' => 'user/password'));
+
+  // Clear menu cache so removals reflect in UI immediately.
+  menu_cache_clear_all();
 }
 
 /**
@@ -168,6 +191,12 @@ function otp_menu_alter(&$items) {
 function otp_menu_link_alter(&$link) {
   if (!empty($link['link_path']) && $link['link_path'] === 'admin/config/people/otp') {
     $link['hidden'] = 1;
+  }
+
+  // Hide password reset links from user-facing menus to enforce OTP-only login.
+  if (!empty($link['link_path']) && $link['link_path'] === 'user/password') {
+    $link['hidden'] = 1;
+    $link['customized'] = 1;
   }
 }
 
