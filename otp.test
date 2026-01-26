@@ -1,0 +1,160 @@
+<?php
+
+/**
+ * @file
+ * Tests for the OTP module.
+ */
+
+class OtpLoginFlowTest extends BackdropWebTestCase {
+
+  protected $account;
+
+  public static function getInfo() {
+    return array(
+      'name' => t('OTP: login flow'),
+      'description' => t('Covers requesting and verifying OTP codes.'),
+      'group' => t('OTP'),
+    );
+  }
+
+  public function setUp() {
+    parent::setUp('otp');
+    $this->account = $this->backdropCreateUser(array('access content'));
+  }
+
+  /**
+   * Sending a login code via API delivers mail to the primary address.
+   */
+  public function testSendLoginCode() {
+    $before_total = count($this->backdropGetMails());
+
+    $code = '246810';
+    $expires = REQUEST_TIME + 600;
+    otp_send_login_code($this->account, $code, $expires, '', $this->account->mail);
+
+    $after_total = count($this->backdropGetMails());
+    $this->assertTrue($after_total > $before_total, 'OTP mail was sent.');
+
+    $mails = $this->backdropGetMails(array('id' => 'otp_login_code'));
+    $this->assertTrue(!empty($mails), 'OTP login_code mail captured.');
+    $this->assertEqual($this->account->mail, $mails[0]['to'], 'Mail sent to primary email.');
+  }
+
+  /**
+   * Active login records are stored and retrieved correctly.
+   */
+  public function testActiveLoginStorage() {
+    $code = '654321';
+    $expires = REQUEST_TIME + 300;
+    otp_store_active_login($this->account->uid, $this->account->mail, $code, $expires, 'node');
+
+    $active = otp_get_active_login();
+    $this->assertTrue(!empty($active), 'Active login retrieved.');
+    $this->assertEqual($active['uid'], $this->account->uid, 'UID stored.');
+    $this->assertEqual($active['mail'], $this->account->mail, 'Mail stored.');
+    $this->assertEqual($active['code'], $code, 'Code stored.');
+    $this->assertEqual($active['destination'], 'node', 'Destination stored.');
+
+    otp_clear_active_login();
+    $this->assertTrue(empty(otp_get_active_login()), 'Active login cleared.');
+  }
+
+}
+
+class OtpMultipleEmailIntegrationTest extends BackdropWebTestCase {
+
+  protected $account;
+
+  public static function getInfo() {
+    return array(
+      'name' => t('OTP: multiple email integration'),
+      'description' => t('Covers OTP delivery when Multiple Email is enabled.'),
+      'group' => t('OTP'),
+    );
+  }
+
+  public function setUp() {
+    parent::setUp('otp', 'multiple_email');
+    $this->account = $this->backdropCreateUser(array('access content', 'use multiple emails'));
+    $this->clearMails();
+  }
+
+  protected function clearMails() {
+    state_set('test_email_collector', array());
+  }
+
+  protected function addSecondaryEmail($confirmed = TRUE) {
+    $mail = $this->randomName() . '@example.com';
+    $eid = multiple_email_register_email($this->account->uid, $mail, $confirmed);
+    $address = multiple_email_load($eid);
+    if ($confirmed) {
+      multiple_email_confirm_email($address, TRUE);
+    }
+    return multiple_email_load($eid);
+  }
+
+  public function testSendLoginCodeAllConfirmed() {
+    $this->clearMails();
+    // Configure broadcast to all confirmed addresses.
+    config_set('otp.settings', 'otp_multiple_email_delivery', 'all_confirmed');
+
+    $secondary = $this->addSecondaryEmail(TRUE);
+
+    $before = count($this->backdropGetMails());
+    $code = '999000';
+    $expires = REQUEST_TIME + 300;
+    otp_send_login_code($this->account, $code, $expires, '', $secondary->email);
+
+    $mails = $this->backdropGetMails(array('id' => 'otp_login_code'));
+    $this->assertTrue(count($mails) >= 2, 'OTP mails sent to multiple recipients.');
+
+    $tos = array();
+    foreach ($mails as $mail) {
+      $tos[] = $mail['to'];
+    }
+    $this->assertTrue(in_array($this->account->mail, $tos), 'Primary email received OTP.');
+    $this->assertTrue(in_array($secondary->email, $tos), 'Confirmed secondary received OTP.');
+  }
+
+  public function testSendLoginCodeLoginOnly() {
+    $this->clearMails();
+    // Default behavior: send only to the login address.
+    config_set('otp.settings', 'otp_multiple_email_delivery', 'login_only');
+
+    $secondary = $this->addSecondaryEmail(TRUE);
+
+    $code = '112233';
+    $expires = REQUEST_TIME + 300;
+    otp_send_login_code($this->account, $code, $expires, '', $secondary->email);
+
+    $mails = $this->backdropGetMails(array('id' => 'otp_login_code'));
+    $tos = array();
+    foreach ($mails as $mail) {
+      $tos[] = $mail['to'];
+    }
+
+    $this->assertTrue(in_array($secondary->email, $tos), 'Login address received OTP.');
+    $this->assertFalse(in_array($this->account->mail, $tos), 'Primary email did not receive OTP when login_only.');
+  }
+
+  public function testUnconfirmedSecondaryNotUsed() {
+    $this->clearMails();
+    config_set('otp.settings', 'otp_multiple_email_delivery', 'all_confirmed');
+    $secondary = $this->addSecondaryEmail(FALSE);
+
+    $code = '445566';
+    $expires = REQUEST_TIME + 300;
+    otp_send_login_code($this->account, $code, $expires, '', $secondary->email);
+
+    $mails = $this->backdropGetMails(array('id' => 'otp_login_code'));
+    $tos = array();
+    foreach ($mails as $mail) {
+      $tos[] = $mail['to'];
+    }
+
+    $this->assertTrue(in_array($secondary->email, $tos), 'Login address (unconfirmed) received OTP.');
+    $this->assertTrue(in_array($this->account->mail, $tos), 'Primary included when broadcasting confirmed addresses.');
+    $this->assertTrue(count(array_unique($tos)) === count($tos), 'No duplicate recipients.');
+  }
+
+}

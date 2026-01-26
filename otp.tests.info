@@ -1,0 +1,11 @@
+[OtpLoginFlowTest]
+name = OTP: login flow
+description = Covers requesting and verifying OTP codes.
+group = OTP
+file = otp.test
+
+[OtpMultipleEmailIntegrationTest]
+name = OTP: multiple email integration
+description = Covers OTP delivery with confirmed secondary addresses.
+group = OTP
+file = otp.test

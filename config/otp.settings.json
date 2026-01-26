@@ -4,5 +4,6 @@
     "otp_expiration": 600,
     "otp_sent_page_text": "We’ve just sent a login link to your email address. You should see it in your inbox shortly 😊 If you don’t see it soon, please check your spam or junk folder.",
     "otp_welcome_text": "Welcome back! 🎉 You’re now signed in using your one-time login link.",
-    "otp_redirect_to_referrer": false
+    "otp_redirect_to_referrer": false,
+    "otp_multiple_email_delivery": "login_only"
 }

@@ -77,3 +77,15 @@ function otp_update_1003() {
 
   return t('Seeded OTP mail template defaults.');
 }
+
+/**
+ * Add Multiple Email delivery preference setting.
+ */
+function otp_update_1004() {
+  $config = config('otp.settings');
+  if ($config->get('otp_multiple_email_delivery') === NULL) {
+    $config->set('otp_multiple_email_delivery', 'login_only');
+    $config->save();
+  }
+  return t('Added OTP Multiple Email delivery preference.');
+}

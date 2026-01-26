@@ -314,6 +314,30 @@ function otp_settings() {
     '#default_value' => (bool) $config->get('otp_redirect_to_referrer'),
   );
 
+  if (module_exists('multiple_email')) {
+    $form['otp_multiple_email'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Multiple Email integration'),
+      '#description' => t('Control where OTP codes are delivered when the Multiple Email module is enabled.'),
+    );
+
+    $delivery = $config->get('otp_multiple_email_delivery');
+    if ($delivery === NULL) {
+      $delivery = 'login_only';
+    }
+
+    $form['otp_multiple_email']['otp_multiple_email_delivery'] = array(
+      '#type' => 'radios',
+      '#title' => t('Delivery target'),
+      '#default_value' => $delivery,
+      '#options' => array(
+        'login_only' => t('Only the address used to request the code'),
+        'all_confirmed' => t('Broadcast to primary + confirmed secondary addresses'),
+      ),
+      '#description' => t('Codes are always sent to the address entered on login. Optionally also send to all confirmed addresses on the account.'),
+    );
+  }
+
   $form['otp_mail'] = array(
     '#type' => 'fieldset',
     '#title' => t('Email templates'),
@@ -544,12 +568,22 @@ function otp_request_form_validate($form, &$form_state) {
   $users = user_load_multiple(array(), array('mail' => $mail, 'status' => 1));
   $account = reset($users);
 
+  // If not found on the primary mail, allow confirmed secondary emails when
+  // Multiple Email is enabled.
+  if (empty($account) && module_exists('multiple_email')) {
+    $address = multiple_email_find_address($mail);
+    if (!empty($address) && !empty($address->confirmed)) {
+      $account = user_load($address->uid);
+    }
+  }
+
   if (empty($account)) {
     form_set_error('name', t('That e-mail address is not recognized.'));
     return;
   }
 
   $form_state['otp_account'] = $account;
+  $form_state['otp_login_mail'] = $mail;
 }
 
 /**
@@ -629,19 +663,21 @@ function otp_request_form_submit($form, &$form_state) {
   $code = otp_generate_code($code_length);
   $expires_at = REQUEST_TIME + $expiration;
 
+  $login_mail = isset($form_state['otp_login_mail']) ? $form_state['otp_login_mail'] : $account->mail;
+
   $destination = isset($form_state['values']['otp_destination']) ? $form_state['values']['otp_destination'] : '';
   $destination = (!empty($destination) && !url_is_external($destination)) ? $destination : '';
   if (empty($destination) && !empty($_SESSION['otp_destination']) && !url_is_external($_SESSION['otp_destination'])) {
     $destination = $_SESSION['otp_destination'];
   }
 
-  otp_store_active_login($account->uid, $account->mail, $code, $expires_at, $destination);
+  otp_store_active_login($account->uid, $login_mail, $code, $expires_at, $destination);
 
   if (!empty($destination)) {
     $_SESSION['otp_destination'] = $destination;
   }
 
-  otp_send_login_code($account, $code, $expires_at, $destination);
+  otp_send_login_code($account, $code, $expires_at, $destination, $login_mail);
 
   $sent_page_text = $config->get('otp_sent_page_text');
   if (empty($sent_page_text)) {
@@ -844,7 +880,7 @@ function otp_generate_code($length = 6) {
 /**
  * Send a one-time login code email, generating values if needed.
  */
-function otp_send_login_code($account, $code = NULL, $expires_at = NULL, $destination = '') {
+function otp_send_login_code($account, $code = NULL, $expires_at = NULL, $destination = '', $login_mail = NULL) {
   global $language;
 
   $config = config('otp.settings');
@@ -857,14 +893,51 @@ function otp_send_login_code($account, $code = NULL, $expires_at = NULL, $destin
   $code = $code !== NULL ? $code : otp_generate_code($code_length);
   $expires_at = $expires_at !== NULL ? $expires_at : REQUEST_TIME + $expiration;
 
-  $token = otp_build_token($account->uid, $account->mail, $code, $expires_at, $destination);
+  $login_mail = $login_mail ?: $account->mail;
 
-  backdrop_mail('otp', 'login_code', $account->mail, $language, array(
-    'code' => $code,
-    'user' => $account,
-    'expires_in' => $expiration,
-    'token' => $token,
-  ));
+  $recipients = otp_resolve_login_recipients($account, $login_mail);
+
+  foreach ($recipients as $recipient_mail) {
+    $token = otp_build_token($account->uid, $recipient_mail, $code, $expires_at, $destination);
+
+    backdrop_mail('otp', 'login_code', $recipient_mail, $language, array(
+      'code' => $code,
+      'user' => $account,
+      'expires_in' => $expiration,
+      'token' => $token,
+    ));
+  }
+}
+
+/**
+ * Determine OTP delivery recipients, honoring Multiple Email integration.
+ */
+function otp_resolve_login_recipients($account, $login_mail) {
+  $recipients = array();
+
+  if (!empty($login_mail)) {
+    $recipients[] = $login_mail;
+  }
+
+  $config = config('otp.settings');
+  $delivery = $config->get('otp_multiple_email_delivery');
+  $delivery = $delivery ?: 'login_only';
+
+  if ($delivery === 'all_confirmed' && module_exists('multiple_email')) {
+    $addresses = multiple_email_load_addresses($account->uid);
+    if (!empty($addresses) && !empty($addresses[0])) {
+      foreach ($addresses[0] as $eid => $email) {
+        if (!empty($addresses[$eid]) && !empty($addresses[$eid]->confirmed)) {
+          $recipients[] = $addresses[$eid]->email;
+        }
+      }
+    }
+  }
+
+  // Remove duplicates and empty values.
+  $recipients = array_values(array_unique(array_filter(array_map('trim', $recipients))));
+
+  return $recipients;
 }
 
 /**
