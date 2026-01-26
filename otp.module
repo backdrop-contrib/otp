@@ -687,6 +687,13 @@ function otp_verify_form($form, &$form_state) {
     '#value' => t('Verify and sign in'),
   );
 
+  // Allow users to return and request a new code or change their email.
+  $form['actions']['back'] = array(
+    '#type' => 'markup',
+    '#markup' => l(t('Back to login'), 'user/login', array('attributes' => array('class' => array('button', 'secondary')))),
+    '#weight' => 5,
+  );
+
   return $form;
 }
 
